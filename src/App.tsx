@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import Papa from 'papaparse';
 import { 
   ShieldAlert, 
   BarChart3, 
@@ -16,11 +17,13 @@ import {
   History,
   AlertOctagon,
   Scale,
-  AlertTriangle
+  AlertTriangle,
+  FileSpreadsheet,
+  FileJson
 } from 'lucide-react';
 import { MOCK_DATASET } from './constants';
 import { Candidate, AuditResult, EthicalRiskLevel } from './types';
-import { auditDecision, auditDataset } from './services/geminiService';
+import { auditDecision, auditDataset, auditCounterfactuals } from './services/geminiService';
 import { Card, Button, RiskBadge } from './components/UI';
 import ReactMarkdown from 'react-markdown';
 
@@ -34,6 +37,14 @@ export default function App() {
   const [datasetSummary, setDatasetSummary] = useState<string | null>(null);
   const [isAuditing, setIsAuditing] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [isCounterfactualLoading, setIsCounterfactualLoading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  const [globalMetrics, setGlobalMetrics] = useState<{ disparateImpact: number; proxyCorrelation: number; ethicalIndex: number } | null>({
+    disparateImpact: 0.72,
+    proxyCorrelation: 0.14,
+    ethicalIndex: 74.2
+  });
+  const [globalCounterfactuals, setGlobalCounterfactuals] = useState<{ gender_sensitivity: number, university_sensitivity: number, analysis: string } | null>(null);
   const [auditHistory, setAuditHistory] = useState<{ candidate: Candidate; result: AuditResult; timestamp: Date }[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
 
@@ -46,7 +57,8 @@ export default function App() {
     location: 'Remote',
     years_experience: 5,
     skills: ['React', 'Python'],
-    decision: 'Rejected'
+    decision: 'Rejected',
+    confidence: 0.85
   });
 
   const runDecisionAudit = async (candidate: Candidate) => {
@@ -91,21 +103,103 @@ export default function App() {
       location: 'Remote',
       years_experience: 5,
       skills: ['React', 'Python'],
-      decision: 'Rejected'
+      decision: 'Rejected',
+      confidence: 0.85
     });
   };
 
   const runDatasetAudit = async () => {
     setIsSummarizing(true);
     try {
-      const summary = await auditDataset(candidates);
-      setDatasetSummary(summary);
-      setCurrentPage('dashboard'); // Ensure we are on dashboard to see result
+      const result = await auditDataset(candidates);
+      setDatasetSummary(result.summary);
+      setGlobalMetrics({
+        disparateImpact: result.disparateImpact,
+        proxyCorrelation: result.proxyCorrelation,
+        ethicalIndex: result.ethicalIndex
+      });
+      setCurrentPage('dashboard');
     } catch (error) {
       console.error(error);
     } finally {
       setIsSummarizing(false);
     }
+  };
+
+  const runGlobalCounterfactuals = async () => {
+    setIsCounterfactualLoading(true);
+    try {
+      const result = await auditCounterfactuals(candidates);
+      setGlobalCounterfactuals(result);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsCounterfactualLoading(false);
+    }
+  };
+
+  const processRawData = (data: any[]) => {
+    const sanitized = data.map((c, index) => ({
+      ...c,
+      id: c.id || `uploaded-${Date.now()}-${index}`,
+      name: c.name || `Candidate ${index + 1}`,
+      gender: c.gender || 'Unknown',
+      ethnicity: c.ethnicity || 'Unknown',
+      university_tier: c.university_tier || 'Tier 2',
+      location: c.location || 'Remote',
+      years_experience: typeof c.years_experience === 'number' ? c.years_experience : (parseInt(c.years_experience) || 0),
+      skills: Array.isArray(c.skills) ? c.skills : (c.skills ? (typeof c.skills === 'string' ? c.skills.split(',').map((s: string) => s.trim()) : [c.skills]) : []),
+      decision: c.decision || 'Rejected',
+      confidence: typeof c.confidence === 'number' ? c.confidence : (parseFloat(c.confidence) || 0.5)
+    }));
+
+    setCandidates(sanitized);
+    setUploadStatus({ type: 'success', message: `Successfully loaded ${sanitized.length} records.` });
+    setDatasetSummary(`Dataset of ${sanitized.length} records uploaded. Run System Audit to analyze global patterns.`);
+    setTimeout(() => setUploadStatus(null), 5000);
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setUploadStatus(null);
+    const reader = new FileReader();
+    const fileExtension = file.name.split('.').pop()?.toLowerCase();
+
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      
+      try {
+        if (fileExtension === 'csv') {
+          Papa.parse(content, {
+            header: true,
+            dynamicTyping: true,
+            skipEmptyLines: true,
+            complete: (results) => {
+              if (results.data && results.data.length > 0) {
+                processRawData(results.data);
+              } else {
+                setUploadStatus({ type: 'error', message: "CSV file is empty or malformed." });
+              }
+            },
+            error: (err) => {
+              setUploadStatus({ type: 'error', message: `CSV Parse Error: ${err.message}` });
+            }
+          });
+        } else if (fileExtension === 'json') {
+          const json = JSON.parse(content);
+          const data = Array.isArray(json) ? json : [json];
+          processRawData(data);
+        } else {
+          setUploadStatus({ type: 'error', message: "Unsupported file type. Use .csv or .json" });
+        }
+      } catch (err) {
+        setUploadStatus({ type: 'error', message: "Failed to parse file. Ensure it is valid CSV or JSON." });
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
   };
 
   return (
@@ -116,15 +210,42 @@ export default function App() {
           <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-slate-950">EG</div>
           <h1 className="text-xl font-semibold tracking-tight">EthosGuard <span className="text-slate-500 font-normal text-sm ml-2">// MVP PHASE 1</span></h1>
         </div>
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span className="text-xs font-medium text-slate-400">Gemini API Connected</span>
+          <div className="flex items-center gap-6">
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-2">
+                <input 
+                  type="file" 
+                  id="dataset-upload" 
+                  className="hidden" 
+                  accept=".json,.csv" 
+                  onChange={handleFileUpload}
+                />
+                <label 
+                  htmlFor="dataset-upload" 
+                  className="text-[10px] text-slate-400 border border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-800 cursor-pointer flex items-center gap-2 transition-colors group"
+                >
+                  <Database className="w-3 h-3 group-hover:text-emerald-400" />
+                  <span>CSV / JSON Upload</span>
+                </label>
+              </div>
+              {uploadStatus && (
+                <motion.span 
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`text-[9px] font-bold uppercase tracking-wider ${uploadStatus.type === 'success' ? 'text-emerald-400' : 'text-rose-400'}`}
+                >
+                  {uploadStatus.message}
+                </motion.span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span className="text-xs font-medium text-slate-400">Gemini 3 Flash Active</span>
+            </div>
+            <Button variant="primary" onClick={runDatasetAudit} disabled={isSummarizing}>
+              {isSummarizing ? 'Analyzing...' : 'Run System Audit'}
+            </Button>
           </div>
-          <Button variant="primary" onClick={runDatasetAudit} disabled={isSummarizing}>
-            {isSummarizing ? 'Analyzing...' : 'Run System Audit'}
-          </Button>
-        </div>
       </header>
 
       <main className="flex-1 flex overflow-hidden">
@@ -159,11 +280,15 @@ export default function App() {
           <div className="mt-auto pt-4">
             <div className="p-4 bg-slate-800/50 rounded-xl border border-slate-700">
               <div className="text-xs text-slate-400 mb-1 font-mono uppercase tracking-widest">Ethical Index</div>
-              <div className="text-2xl font-bold text-amber-400 font-mono tracking-tighter">74.2<span className="text-sm font-normal text-slate-500 italic ml-1">avg</span></div>
+              <div className="text-2xl font-bold text-amber-400 font-mono tracking-tighter">
+                {globalMetrics?.ethicalIndex.toFixed(1) || '0.0'}
+                <span className="text-sm font-normal text-slate-500 italic ml-1">avg</span>
+              </div>
               <div className="w-full bg-slate-700 h-1 rounded-full mt-2 overflow-hidden">
                 <motion.div 
+                   key={globalMetrics?.ethicalIndex}
                   initial={{ width: 0 }}
-                  animate={{ width: '74%' }}
+                  animate={{ width: `${globalMetrics?.ethicalIndex || 0}%` }}
                   className="bg-amber-400 h-1 rounded-full shadow-[0_0_8px_rgba(251,191,36,0.5)]"
                 ></motion.div>
               </div>
@@ -207,7 +332,7 @@ export default function App() {
                        <select 
                          value={newCandidate.gender}
                          onChange={e => setNewCandidate({...newCandidate, gender: e.target.value})}
-                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none text-white"
+                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none text-white transition-colors"
                        >
                          <option>Male</option>
                          <option>Female</option>
@@ -215,11 +340,27 @@ export default function App() {
                        </select>
                     </div>
                     <div className="space-y-2">
+                       <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Ethnicity</label>
+                       <select 
+                         value={newCandidate.ethnicity}
+                         onChange={e => setNewCandidate({...newCandidate, ethnicity: e.target.value})}
+                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none text-white transition-colors"
+                       >
+                         <option>Caucasian</option>
+                         <option>Asian</option>
+                         <option>Black/African American</option>
+                         <option>Hispanic/Latino</option>
+                         <option>Middle Eastern</option>
+                         <option>Native American</option>
+                         <option>Other</option>
+                       </select>
+                    </div>
+                    <div className="space-y-2">
                        <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">University Tier</label>
                        <select 
                          value={newCandidate.university_tier}
                          onChange={e => setNewCandidate({...newCandidate, university_tier: e.target.value as any})}
-                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none text-white"
+                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none text-white transition-colors"
                        >
                          <option>Tier 1</option>
                          <option>Tier 2</option>
@@ -227,15 +368,57 @@ export default function App() {
                        </select>
                     </div>
                     <div className="space-y-2">
+                       <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Location Type</label>
+                       <select 
+                         value={newCandidate.location}
+                         onChange={e => setNewCandidate({...newCandidate, location: e.target.value})}
+                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none text-white transition-colors"
+                       >
+                         <option>Remote</option>
+                         <option>Onsite</option>
+                         <option>Hybrid</option>
+                       </select>
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Years Experience</label>
+                       <input 
+                         type="number" 
+                         value={newCandidate.years_experience}
+                         onChange={e => setNewCandidate({...newCandidate, years_experience: parseInt(e.target.value) || 0})}
+                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors text-white"
+                       />
+                    </div>
+                    <div className="space-y-2 col-span-2">
+                       <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Skills (Comma Separated)</label>
+                       <input 
+                         type="text" 
+                         value={newCandidate.skills?.join(', ')}
+                         onChange={e => setNewCandidate({...newCandidate, skills: e.target.value.split(',').map(s => s.trim())})}
+                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors text-white"
+                       />
+                    </div>
+                    <div className="space-y-2">
                        <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Model Decision</label>
                        <select 
                          value={newCandidate.decision}
                          onChange={e => setNewCandidate({...newCandidate, decision: e.target.value as any})}
-                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none text-white"
+                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none text-white transition-colors"
                        >
                          <option>Accepted</option>
                          <option>Rejected</option>
                        </select>
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">AI Confidence (0-1)</label>
+                       <input 
+                         type="number" 
+                         step="0.01"
+                         min="0"
+                         max="1"
+                         value={newCandidate.confidence}
+                         onChange={e => setNewCandidate({...newCandidate, confidence: parseFloat(e.target.value) || 0})}
+                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors text-white"
+                       />
                     </div>
                   </div>
 
@@ -281,9 +464,19 @@ export default function App() {
             </motion.div>
           ) : currentPage === 'counterfactuals' ? (
             <motion.div initial={{opacity: 0, x: -10}} animate={{opacity: 1, x:0}} className="space-y-8 max-w-4xl">
-              <div className="space-y-2">
-                <h2 className="text-2xl font-bold text-white">Global Counterfactual Engine</h2>
-                <p className="text-slate-400 text-sm">System-wide simulation of identity swaps and outcome stability.</p>
+              <div className="flex justify-between items-end">
+                <div className="space-y-2">
+                  <h2 className="text-2xl font-bold text-white">Global Counterfactual Engine</h2>
+                  <p className="text-slate-400 text-sm">System-wide simulation of identity swaps and outcome stability.</p>
+                </div>
+                <Button 
+                  variant="primary" 
+                  onClick={runGlobalCounterfactuals} 
+                  disabled={isCounterfactualLoading}
+                  className="bg-blue-600 hover:bg-blue-500 text-white"
+                >
+                  {isCounterfactualLoading ? 'Running Analysis...' : 'Calibrate AI Engine'}
+                </Button>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -291,17 +484,25 @@ export default function App() {
                   <h3 className="text-white font-bold text-sm uppercase tracking-widest">Gender Swap Sensitivity</h3>
                   <div className="h-24 flex items-end gap-2 px-4">
                      <div className="flex-1 bg-slate-800 relative group">
-                        <div className="absolute inset-x-0 bottom-0 bg-emerald-500/40 h-[88%] group-hover:bg-emerald-500 transition-all"></div>
-                        <div className="absolute -top-6 left-0 right-0 text-center text-[9px] text-slate-500">MALE</div>
+                        <div 
+                          className="absolute inset-x-0 bottom-0 bg-emerald-500/40 group-hover:bg-emerald-500 transition-all" 
+                          style={{ height: globalCounterfactuals ? '85%' : '20%' }}
+                        ></div>
+                        <div className="absolute -top-6 left-0 right-0 text-center text-[9px] text-slate-500">STABLE</div>
                      </div>
                      <div className="flex-1 bg-slate-800 relative group">
-                        <div className="absolute inset-x-0 bottom-0 bg-rose-500/40 h-[62%] group-hover:bg-rose-500 transition-all"></div>
-                        <div className="absolute -top-6 left-0 right-0 text-center text-[9px] text-slate-500">FEMALE</div>
+                        <div 
+                          className="absolute inset-x-0 bottom-0 bg-rose-500/40 group-hover:bg-rose-500 transition-all shadow-[0_0_15px_rgba(244,63,94,0.3)]" 
+                          style={{ height: globalCounterfactuals ? `${globalCounterfactuals.gender_sensitivity}%` : '60%' }}
+                        ></div>
+                        <div className="absolute -top-6 left-0 right-0 text-center text-[9px] text-slate-500">SENSITIVE</div>
                      </div>
                   </div>
                   <div className="text-[11px] text-slate-400 leading-relaxed border-t border-slate-800 pt-4">
-                    <span className="text-rose-400 font-bold uppercase mr-2 shrink-0">Alert:</span> 
-                    Selection probability drops by 26% when identity is toggled to Female across identical feature sets.
+                    <span className="text-rose-400 font-bold uppercase mr-2 shrink-0">Analysis:</span> 
+                    {globalCounterfactuals 
+                      ? `Gender sensitivity index is at ${globalCounterfactuals.gender_sensitivity}%. Intersectionality detected.`
+                      : "Calibration required. AI model will simulate 1,000+ attribute shifts to detect disparate impact."}
                   </div>
                 </Card>
 
@@ -309,24 +510,46 @@ export default function App() {
                   <h3 className="text-white font-bold text-sm uppercase tracking-widest">University Prestige Leakage</h3>
                   <div className="h-24 flex items-end gap-2 px-4">
                      <div className="flex-1 bg-slate-800 relative group">
-                        <div className="absolute inset-x-0 bottom-0 bg-emerald-500/20 h-[95%] group-hover:bg-emerald-500/50 transition-all"></div>
-                        <div className="absolute -top-6 left-0 right-0 text-center text-[9px] text-slate-500">TIER 1</div>
+                        <div 
+                          className="absolute inset-x-0 bottom-0 bg-emerald-500/20 group-hover:bg-emerald-500/50 transition-all font-mono text-[8px] flex items-center justify-center text-emerald-400" 
+                          style={{ height: '90%' }}
+                        >REF</div>
+                        <div className="absolute -top-6 left-0 right-0 text-center text-[9px] text-slate-500">PRESTIGE</div>
                      </div>
                      <div className="flex-1 bg-slate-800 relative group">
-                        <div className="absolute inset-x-0 bottom-0 bg-amber-500/20 h-[45%] group-hover:bg-amber-500/50 transition-all"></div>
-                        <div className="absolute -top-6 left-0 right-0 text-center text-[9px] text-slate-500">TIER 3</div>
+                        <div 
+                          className="absolute inset-x-0 bottom-0 bg-amber-500/20 group-hover:bg-amber-500/50 transition-all" 
+                          style={{ height: globalCounterfactuals ? `${globalCounterfactuals.university_sensitivity}%` : '40%' }}
+                        ></div>
+                        <div className="absolute -top-6 left-0 right-0 text-center text-[9px] text-slate-500">IMPACT</div>
                      </div>
                   </div>
                   <div className="text-[11px] text-slate-400 leading-relaxed border-t border-slate-800 pt-4">
-                    <span className="text-amber-400 font-bold uppercase mr-2 shrink-0">Analysis:</span> 
-                    Higher reliance on prestige proxy detected. Tier 3 candidates require 40% higher technical scores for equivalent outcomes.
+                    <span className="text-amber-400 font-bold uppercase mr-2 shrink-0">Status:</span> 
+                    {globalCounterfactuals 
+                      ? globalCounterfactuals.analysis
+                      : "Proxy variable leakage check is pending. Click 'Calibrate' to initiate deep-scan."}
                   </div>
                 </Card>
               </div>
 
+              {!globalCounterfactuals && !isCounterfactualLoading && (
+                <div className="p-12 bg-slate-900/50 rounded-2xl border-2 border-dashed border-slate-800 text-center space-y-4">
+                  <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mx-auto scale-110 shadow-xl">
+                    <Scale className="w-8 h-8 text-slate-600" />
+                  </div>
+                  <div className="max-w-xs mx-auto">
+                    <p className="text-slate-200 font-semibold">Counterfactual Analysis Not Initialized</p>
+                    <p className="text-slate-500 text-xs mt-1 italic">Run Calibration to prompt Gemini to stress-test your current dataset using counterfactual reasoning.</p>
+                  </div>
+                </div>
+              )}
+              
               <div className="p-6 bg-slate-900 rounded-xl border border-slate-800 text-center space-y-4">
-                <p className="text-slate-300 text-sm">Targeting specific bias clusters... Gemini is analyzing intersectional patterns.</p>
-                <Button variant="secondary" className="px-8" onClick={() => setCurrentPage('dashboard')}>Back to Audit View</Button>
+                <p className="text-slate-300 text-sm italic font-serif">"Fairness is not just the absence of bias, it is the presence of stable equity across all personas."</p>
+                <div className="flex justify-center gap-4">
+                  <Button variant="secondary" className="px-8" onClick={() => setCurrentPage('dashboard')}>Back to Audit View</Button>
+                </div>
               </div>
             </motion.div>
           ) : (
@@ -365,13 +588,21 @@ export default function App() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
                 <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
                   <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">Disparate Impact</div>
-                  <div className="text-2xl font-semibold mt-1 text-rose-400">0.72</div>
-                  <div className="text-[10px] text-rose-500/80 mt-1 uppercase font-bold">Below threshold (0.80)</div>
+                  <div className={`text-2xl font-semibold mt-1 ${(globalMetrics?.disparateImpact || 0) < 0.8 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                    {globalMetrics?.disparateImpact.toFixed(2) || '0.00'}
+                  </div>
+                  <div className={`text-[10px] mt-1 uppercase font-bold ${(globalMetrics?.disparateImpact || 0) < 0.8 ? 'text-rose-500/80' : 'text-emerald-500/80'}`}>
+                    {(globalMetrics?.disparateImpact || 0) < 0.8 ? 'Below threshold (0.80)' : 'Above compliance limit'}
+                  </div>
                 </div>
                 <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
                   <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">Proxy Correlation</div>
-                  <div className="text-2xl font-semibold mt-1 text-emerald-400">0.14</div>
-                  <div className="text-[10px] text-emerald-500 mt-1 uppercase font-bold">Low variables leakage</div>
+                  <div className={`text-2xl font-semibold mt-1 ${(globalMetrics?.proxyCorrelation || 0) > 0.3 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {globalMetrics?.proxyCorrelation.toFixed(2) || '0.00'}
+                  </div>
+                  <div className={`text-[10px] mt-1 uppercase font-bold ${(globalMetrics?.proxyCorrelation || 0) > 0.3 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                    {(globalMetrics?.proxyCorrelation || 0) > 0.3 ? 'High variables leakage' : 'Low variables leakage'}
+                  </div>
                 </div>
                 <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
                   <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">Audit Confidence</div>

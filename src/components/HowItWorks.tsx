@@ -80,8 +80,8 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onStart }) => {
         <div className="space-y-4">
           {[
             {
-              title: "1. Dataset Ingestion",
-              desc: "EthosGuard loads candidate or applicant data. The system immediately checks for 'Disparate Impact' across groups.",
+              title: "1. Dataset Ingestion (Mock or Real)",
+              desc: "EthosGuard loads candidate data. You can use the built-in dataset or upload your own CSV/JSON files to audit your organization's specific recruitment patterns.",
               icon: <Database className="w-4 h-4" />
             },
             {
@@ -108,6 +108,45 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onStart }) => {
               </div>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* Raw Data Upload Guide */}
+      <section className="space-y-6 p-6 bg-slate-900/40 rounded-2xl border border-slate-800/50">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-emerald-500/20 rounded-lg">
+            <Database className="w-5 h-5 text-emerald-400" />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold text-white">Custom Data Auditing</h3>
+            <p className="text-slate-500 text-[10px] uppercase tracking-widest font-bold">New: CSV & JSON Pipeline</p>
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-4">
+          <div className="space-y-4">
+            <h4 className="text-sm font-bold text-slate-200">What it does</h4>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              The "CSV / JSON Upload" button allows you to bypass the demonstration data and use your actual HR records. EthosGuard will map your column headers back to its AI Governance logic to look for patterns of disparate impact across your entire team or candidate pool.
+            </p>
+          </div>
+          
+          <div className="space-y-4">
+            <h4 className="text-sm font-bold text-slate-200">How to use it</h4>
+            <ul className="space-y-3">
+              {[
+                "Prepare a CSV or JSON file containing candidate attributes.",
+                "Click 'CSV / JSON Upload' in the navigation bar.",
+                "Select your file. The system will automatically sanitize and normalize the data.",
+                "Click 'Run System Audit' to perform a global bias scan on your own records."
+              ].map((text, i) => (
+                <li key={i} className="flex gap-2 text-xs text-slate-400">
+                  <span className="text-emerald-500 font-bold font-mono">{i + 1}.</span>
+                  <span>{text}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       </section>
 
