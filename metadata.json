@@ -1,0 +1,6 @@
+{
+  "name": "EthosGuard",
+  "description": "AI Fairness Auditor and Decision Governance Engine for high-stakes decisions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
