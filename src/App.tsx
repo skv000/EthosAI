@@ -28,21 +28,18 @@ import { Card, Button, RiskBadge } from './components/UI';
 import ReactMarkdown from 'react-markdown';
 
 import { HowItWorks } from './components/HowItWorks';
-import { auth, db, signInWithGoogle, logout, onAuthStateChanged, User } from './lib/firebase';
+import { auth, db, signInAnonymously, onAuthStateChanged, User } from './lib/firebase';
 import { 
   collection, 
-  getDocs, 
   query, 
   orderBy, 
   serverTimestamp, 
   doc, 
   setDoc, 
   getDoc,
-  deleteDoc,
   onSnapshot,
   writeBatch
 } from 'firebase/firestore';
-import { LogOut, LogIn } from 'lucide-react';
 
 enum OperationType {
   CREATE = 'create',
@@ -117,18 +114,25 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setIsAuthLoading(false);
-      if (!currentUser) {
-        setCandidates(MOCK_DATASET);
-        setAuditHistory([]);
+      if (currentUser) {
+        setUser(currentUser);
+        setIsAuthLoading(false);
+      } else {
+        // Automatically sign in anonymously if not logged in
+        signInAnonymously().then(u => {
+          if (u) setUser(u);
+          setIsAuthLoading(false);
+        });
       }
     });
     return () => unsubscribeAuth();
   }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      if (!isAuthLoading) setCandidates(MOCK_DATASET);
+      return;
+    }
 
     const candPath = `users/${user.uid}/candidates`;
     const candidatesRef = collection(db, candPath);
@@ -137,6 +141,15 @@ export default function App() {
       const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as Candidate));
       if (data.length > 0) {
         setCandidates(data);
+      } else {
+        // New user or empty - initialize with mock data for better UX
+        const batch = writeBatch(db);
+        MOCK_DATASET.forEach(c => {
+          const ref = doc(db, candPath, c.id);
+          batch.set(ref, c);
+        });
+        batch.commit().catch(console.error);
+        setCandidates(MOCK_DATASET);
       }
     }, (error) => {
       console.error("Firestore List Candidates Error:", error);
@@ -150,7 +163,7 @@ export default function App() {
         const auditData = auditDoc.data();
         const cand = candidates.find(c => c.id === auditData.candidateId);
         return {
-          candidate: cand || { name: auditData.candidateName || 'Deleted Candidate' } as Candidate,
+          candidate: cand || { name: auditData.candidateName || 'Candidate Record' } as Candidate,
           result: auditData as AuditResult,
           timestamp: auditData.timestamp?.toDate() || new Date()
         };
@@ -174,6 +187,16 @@ export default function App() {
         if (userData.datasetSummary) {
           setDatasetSummary(userData.datasetSummary);
         }
+      } else {
+         // Create initial profile
+         setDoc(userDocRef, {
+            email: user.email || 'anonymous',
+            isAnonymous: user.isAnonymous,
+            disparateImpact: 0.72,
+            proxyCorrelation: 0.14,
+            ethicalIndex: 74.2,
+            createdAt: serverTimestamp()
+         }).catch(console.error);
       }
     }, (error) => {
       console.error("Firestore Get User Error:", error);
@@ -184,8 +207,8 @@ export default function App() {
       unsubscribeAudits();
       unsubscribeUser();
     };
-  }, [user, candidates.length]);
-
+  }, [user, candidates.length, isAuthLoading]);
+  
   const runDecisionAudit = async (candidate: Candidate) => {
     setIsAuditing(true);
     setSelectedCandidate(candidate);
@@ -210,25 +233,6 @@ export default function App() {
       console.error(error);
     } finally {
       setIsAuditing(false);
-    }
-  };
-
-  const handleLogin = async () => {
-    try {
-      const u = await signInWithGoogle();
-      const userDocRef = doc(db, 'users', u.uid);
-      const userDoc = await getDoc(userDocRef);
-      if (!userDoc.exists()) {
-        await setDoc(userDocRef, {
-          email: u.email,
-          disparateImpact: 0.72,
-          proxyCorrelation: 0.14,
-          ethicalIndex: 74.2,
-          datasetSummary: "Initialization complete. Upload candidates to begin audit."
-        });
-      }
-    } catch (error) {
-      console.error("Login failed:", error);
     }
   };
 
@@ -397,38 +401,14 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans flex flex-col overflow-hidden">
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans flex flex-col md:overflow-hidden">
       {/* Header Navigation */}
-      <header className="h-16 border-b border-slate-800 flex items-center justify-between px-8 bg-slate-900/50 shrink-0">
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setCurrentPage('dashboard')}>
-          <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-slate-950">EG</div>
-          <h1 className="text-xl font-semibold tracking-tight">EthosGuard <span className="text-slate-500 font-normal text-sm ml-2">// MVP PHASE 1</span></h1>
+      <header className="h-16 md:h-16 border-b border-slate-800 flex items-center justify-between px-4 md:px-8 bg-slate-900/50 shrink-0 sticky top-0 md:relative z-40">
+        <div className="flex items-center gap-2 md:gap-3 cursor-pointer" onClick={() => setCurrentPage('dashboard')}>
+          <div className="w-7 h-7 md:w-8 md:h-8 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-slate-950 text-sm md:text-base">EG</div>
+          <h1 className="text-lg md:text-xl font-semibold tracking-tight">EthosGuard <span className="text-slate-500 font-normal text-[10px] md:text-sm ml-1 md:ml-2 hidden sm:inline">// MVP PHASE 1</span></h1>
         </div>
-          <div className="flex items-center gap-6">
-            {isAuthLoading ? (
-              <div className="w-8 h-8 rounded-full border-2 border-slate-800 border-t-emerald-500 animate-spin mr-4"></div>
-            ) : user ? (
-              <div className="flex items-center gap-4 border-r border-slate-800 pr-6">
-                 <div className="text-right hidden sm:block">
-                   <p className="text-[10px] text-white font-bold leading-none">{user.displayName || user.email?.split('@')[0]}</p>
-                   <p className="text-[8px] text-slate-500 uppercase tracking-tighter">Verified Auditor</p>
-                 </div>
-                 <button 
-                  onClick={logout}
-                  className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-rose-400 transition-colors"
-                  title="Logout"
-                 >
-                   <LogOut className="w-4 h-4" />
-                 </button>
-               </div>
-            ) : (
-              <button 
-                onClick={handleLogin}
-                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-bold text-white hover:bg-slate-700 transition-colors uppercase tracking-widest mr-2"
-              >
-                <LogIn className="w-3 h-3" /> Login to Cloud
-              </button>
-            )}
+          <div className="flex items-center gap-3 md:gap-6">
             <div className="flex flex-col items-end gap-1">
               <div className="flex items-center gap-2">
                 <input 
@@ -440,35 +420,41 @@ export default function App() {
                 />
                 <label 
                   htmlFor="dataset-upload" 
-                  className="text-[10px] text-slate-400 border border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-800 cursor-pointer flex items-center gap-2 transition-colors group"
+                  className="text-[10px] text-slate-400 border border-slate-700 px-2 md:px-3 py-1.5 rounded-lg hover:bg-slate-800 cursor-pointer flex items-center gap-2 transition-colors group"
                 >
                   <Database className="w-3 h-3 group-hover:text-emerald-400" />
-                  <span>CSV / JSON Upload</span>
+                  <span className="hidden xs:inline">CSV / JSON Upload</span>
                 </label>
               </div>
               {uploadStatus && (
                 <motion.span 
                   initial={{ opacity: 0, y: -5 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={`text-[9px] font-bold uppercase tracking-wider ${uploadStatus.type === 'success' ? 'text-emerald-400' : 'text-rose-400'}`}
+                  className={`text-[8px] md:text-[9px] font-bold uppercase tracking-wider ${uploadStatus.type === 'success' ? 'text-emerald-400' : 'text-rose-400'} absolute top-14 right-4 bg-slate-900 border border-slate-800 px-2 py-1 rounded shadow-xl`}
                 >
                   {uploadStatus.message}
                 </motion.span>
               )}
             </div>
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${user ? 'bg-blue-500' : 'bg-emerald-500'} animate-pulse`}></span>
-            <span className="text-xs font-medium text-slate-400">{user ? 'Cloud Sync Active' : 'Gemini 3 Flash Active'}</span>
+          <div className="hidden md:flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${user ? (user.isAnonymous ? 'bg-blue-400' : 'bg-blue-500') : 'bg-emerald-500'} animate-pulse`}></span>
+            <span className="text-xs font-medium text-slate-400">{user ? (user.isAnonymous ? 'Anonymous' : 'Verified') : 'Local'}</span>
           </div>
-            <Button variant="primary" onClick={runDatasetAudit} disabled={isSummarizing}>
-              {isSummarizing ? 'Analyzing...' : 'Run System Audit'}
+            <Button variant="primary" onClick={runDatasetAudit} disabled={isSummarizing} className="px-3 md:px-6 py-1.5 md:py-2 text-[10px] md:text-sm">
+              {isSummarizing ? '...' : (
+                <span className="flex items-center gap-2">
+                   <ShieldAlert className="w-3 h-3 md:w-4 md:h-4" />
+                   <span className="hidden sm:inline">System Audit</span>
+                   <span className="inline sm:hidden">Audit</span>
+                </span>
+              )}
             </Button>
           </div>
       </header>
 
-      <main className="flex-1 flex overflow-hidden">
-        {/* Sidebar Nav */}
-        <nav className="w-64 border-r border-slate-800 bg-slate-900/30 p-4 flex flex-col gap-2 overflow-y-auto">
+      <main className="flex-1 flex flex-col md:flex-row overflow-hidden pb-16 md:pb-0">
+        {/* Sidebar Nav - Hidden on mobile, visible on desktop */}
+        <nav className="hidden md:flex w-64 border-r border-slate-800 bg-slate-900/30 p-4 flex-col gap-2 overflow-y-auto">
           <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-2 ml-2">Core Modules</div>
           <button 
             onClick={() => setCurrentPage('dashboard')}
@@ -514,8 +500,42 @@ export default function App() {
           </div>
         </nav>
 
+        {/* Mobile Navigation Bar */}
+        <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-slate-900 border-t border-slate-800 flex items-center justify-around px-4 z-50">
+          <button 
+            onClick={() => setCurrentPage('dashboard')}
+            className={`flex flex-col items-center gap-1 ${currentPage === 'dashboard' ? 'text-emerald-400' : 'text-slate-500'}`}
+          >
+            <BarChart3 className="w-5 h-5" />
+            <span className="text-[10px] font-bold uppercase">Dashboard</span>
+          </button>
+          <button 
+            onClick={() => setCurrentPage('counterfactuals')}
+            className={`flex flex-col items-center gap-1 ${currentPage === 'counterfactuals' ? 'text-blue-400' : 'text-slate-500'}`}
+          >
+            <Scale className="w-5 h-5" />
+            <span className="text-[10px] font-bold uppercase">Engine</span>
+          </button>
+          <button 
+            onClick={() => setCurrentPage('history')}
+            className={`flex flex-col items-center gap-1 ${currentPage === 'history' ? 'text-amber-400' : 'text-slate-500'}`}
+          >
+            <History className="w-5 h-5" />
+            <span className="text-[10px] font-bold uppercase">History</span>
+          </button>
+          <button 
+            onClick={() => setShowAddModal(true)}
+            className="flex flex-col items-center gap-1 text-slate-500"
+          >
+            <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700 -mt-8 shadow-xl">
+              <Database className="w-4 h-4 text-emerald-500" />
+            </div>
+            <span className="text-[10px] font-bold uppercase">Entry</span>
+          </button>
+        </div>
+
         {/* Main Content Area */}
-        <div className="flex-1 overflow-y-auto bg-slate-950 p-6 flex flex-col gap-6">
+        <div className="flex-1 overflow-y-auto bg-slate-950 p-4 md:p-6 flex flex-col gap-6">
           {/* Add Candidate Modal Overlay */}
           <AnimatePresence>
             {showAddModal && (
@@ -528,14 +548,14 @@ export default function App() {
                 <motion.div 
                   initial={{ scale: 0.9, y: 20 }}
                   animate={{ scale: 1, y: 0 }}
-                  className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-8 space-y-6 shadow-2xl"
+                  className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 md:p-8 space-y-6 shadow-2xl relative"
                 >
                   <div className="flex justify-between items-center pb-4 border-b border-slate-800">
-                    <h3 className="text-lg font-bold text-white uppercase tracking-widest">Simulate New Candidate</h3>
-                    <button onClick={() => setShowAddModal(false)} className="text-slate-500 hover:text-white uppercase font-mono text-xs">Close [X]</button>
+                    <h3 className="text-base md:text-lg font-bold text-white uppercase tracking-widest leading-tight">Simulate Candidate</h3>
+                    <button onClick={() => setShowAddModal(false)} className="text-slate-500 hover:text-white uppercase font-mono text-[10px] md:text-xs">Close [X]</button>
                   </div>
                   
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
                     <div className="space-y-2">
                        <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Full Name</label>
                        <input 
@@ -659,7 +679,7 @@ export default function App() {
                  </h2>
                  {user && (
                    <span className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-full font-bold uppercase tracking-widest">
-                     Persisted to Firestore
+                     {user.isAnonymous ? 'Restricted Cloud Persistence' : 'Persisted to Firestore'}
                    </span>
                  )}
                </div>
@@ -838,24 +858,24 @@ export default function App() {
 
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 flex-1">
                 {/* Candidate Table */}
-                <div className="xl:col-span-7">
+                <div className="xl:col-span-7 order-2 xl:order-1">
                   <Card className="h-full flex flex-col">
                     <div className="px-4 py-3 border-b border-slate-800 bg-slate-800/30 flex justify-between items-center shrink-0">
-                      <span className="text-sm font-medium flex items-center gap-2">
+                      <span className="text-xs md:text-sm font-medium flex items-center gap-2">
                         <Database className="w-4 h-4 text-emerald-500" /> Personnel Dataset Audit
                       </span>
                       <div className="flex gap-2">
                           <button onClick={() => setShowAddModal(true)} className="text-[9px] bg-emerald-500 text-slate-950 px-2 py-1 rounded uppercase font-bold hover:bg-emerald-400 transition-colors">Add Candidate</button>
                       </div>
                     </div>
-                    <div className="flex-1 overflow-x-auto">
-                      <table className="w-full text-left border-collapse">
+                    <div className="flex-1 overflow-x-auto min-h-[300px]">
+                      <table className="w-full text-left border-collapse min-w-[500px]">
                         <thead>
                           <tr className="text-[10px] text-slate-500 uppercase border-b border-slate-800">
-                            <th className="px-4 py-2 font-bold">Candidate</th>
-                            <th className="px-4 py-2 font-bold">Tier</th>
-                            <th className="px-4 py-2 font-bold text-center">Decision</th>
-                            <th className="px-4 py-2 font-bold text-right">Action</th>
+                            <th className="px-4 py-2 font-bold whitespace-nowrap">Candidate</th>
+                            <th className="px-4 py-2 font-bold whitespace-nowrap">Tier</th>
+                            <th className="px-4 py-2 font-bold text-center whitespace-nowrap">Decision</th>
+                            <th className="px-4 py-2 font-bold text-right whitespace-nowrap">Action</th>
                           </tr>
                         </thead>
                         <tbody className="text-sm text-slate-300 divide-y divide-slate-800/50">
@@ -899,7 +919,7 @@ export default function App() {
                 </div>
 
                 {/* Audit Trace View */}
-                <div className="xl:col-span-5 h-full">
+                <div className="xl:col-span-5 h-full order-1 xl:order-2">
                   <AnimatePresence mode="wait">
                     {!selectedCandidate ? (
                       <motion.div
@@ -907,10 +927,10 @@ export default function App() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="h-full border border-slate-800 bg-slate-900/10 rounded-xl flex flex-col items-center justify-center p-8 text-center"
+                        className="h-48 xl:h-full border border-slate-800 bg-slate-900/10 rounded-xl flex flex-col items-center justify-center p-8 text-center"
                       >
-                        <Scale className="w-12 h-12 text-slate-800 mb-4" />
-                        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-widest">Select Record for Audit</h3>
+                        <Scale className="w-8 h-8 md:w-12 md:h-12 text-slate-800 mb-4" />
+                        <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Select Record for Audit</h3>
                       </motion.div>
                     ) : (
                       <motion.div
@@ -1005,15 +1025,15 @@ export default function App() {
         </div>
       </main>
 
-      <footer className="h-10 bg-slate-900 border-t border-slate-800 px-8 flex items-center justify-between text-[10px] text-slate-500 shrink-0">
+      <footer className="hidden md:flex h-10 bg-slate-900 border-t border-slate-800 px-8 items-center justify-between text-[10px] text-slate-500 shrink-0">
         <div className="flex gap-6 uppercase tracking-widest font-mono">
-          <span>Deployment: AI-Studio-Cloud-Run</span>
+          <span>Deployment: Cloud-Run</span>
           <span>Engine: Gemini-3-Flash</span>
-          <span>Latency: ~680ms</span>
+          <span className="hidden lg:inline">Latency: ~680ms</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span className="uppercase tracking-widest">Live Governance Layer Active</span>
+          <span className="uppercase tracking-widest">Governance Active</span>
         </div>
       </footer>
     </div>

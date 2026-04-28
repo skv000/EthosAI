@@ -1,12 +1,20 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { 
+  getAuth, 
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  signInAnonymously as firebaseSignInAnonymously,
+  signOut, 
+  onAuthStateChanged, 
+  User 
+} from 'firebase/auth';
 import { initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
-// Use initializeFirestore to specify the databaseId and help with connectivity issues in sandboxed environments
+// Connectivity fix for sandboxed environments
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
 }, firebaseConfig.firestoreDatabaseId || '(default)');
@@ -17,9 +25,23 @@ export async function signInWithGoogle() {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code === 'auth/popup-closed-by-user') {
+      console.warn("Sign-in popup closed by user. No action taken.");
+      return null;
+    }
     console.error("Error signing in with Google:", error);
     throw error;
+  }
+}
+
+export async function signInAnonymously() {
+  try {
+    const result = await firebaseSignInAnonymously(auth);
+    return result.user;
+  } catch (error) {
+    console.error("Anonymous sign-in failed:", error);
+    return null;
   }
 }
 
@@ -27,14 +49,13 @@ export async function logout() {
   await signOut(auth);
 }
 
-// Connection test as required by instructions
+// Connection test
 async function testConnection() {
   try {
-    // Only test if we have a valid path or just a simple ping
     await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration.");
+  } catch (error: any) {
+    if (error.message?.includes('the client is offline')) {
+      console.error("Firestore connectivity issue detected. Check internet or Firebase config.");
     }
   }
 }

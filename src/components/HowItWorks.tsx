@@ -22,14 +22,14 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onStart }) => {
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="max-w-4xl mx-auto space-y-12 pb-20"
+      className="max-w-4xl mx-auto space-y-8 md:space-y-12 pb-20 px-1"
     >
       {/* Hero Section */}
-      <section className="text-center space-y-4 pt-8">
+      <section className="text-center space-y-4 pt-4 md:pt-8">
         <div className="inline-flex items-center gap-2 px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20 text-[10px] font-bold uppercase tracking-widest">
           <ShieldCheck className="w-3 h-3" /> System Architecture Guide
         </div>
-        <h2 className="text-4xl font-bold tracking-tight text-white">How EthosGuard Ensures Fairness</h2>
+        <h2 className="text-2xl md:text-4xl font-bold tracking-tight text-white px-2">How EthosGuard Ensures Fairness</h2>
         <p className="text-slate-400 max-w-2xl mx-auto text-sm leading-relaxed">
           EthosGuard is a multi-layered governance engine designed to detect, explain, and mitigate 
           systemic bias in automated decision systems.

@@ -12,12 +12,10 @@ export default defineConfig(({mode}) => {
     ],
     define: {
       'process.env.GOOGLE_API_KEY': JSON.stringify(env.GOOGLE_API_KEY),
-      'global': 'globalThis',
     },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
-        'node-fetch': path.resolve(__dirname, 'src/fetch-shim.ts'),
       },
     },
     server: {
