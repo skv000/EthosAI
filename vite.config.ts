@@ -11,11 +11,13 @@ export default defineConfig(({mode}) => {
       tailwindcss(),
     ],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      'process.env.GOOGLE_API_KEY': JSON.stringify(env.GOOGLE_API_KEY),
+      'global': 'globalThis',
     },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        'node-fetch': path.resolve(__dirname, 'src/fetch-shim.ts'),
       },
     },
     server: {

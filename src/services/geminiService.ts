@@ -2,7 +2,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { SYSTEM_PROMPT } from "../constants";
 import { AuditResult, Candidate } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY || "" });
 
 export async function auditDecision(candidate: Candidate, allCandidates: Candidate[]): Promise<AuditResult> {
   const prompt = `

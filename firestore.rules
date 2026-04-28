@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- Enterprise Security Rules ---
+
+    // 1. User Profile
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.email is string && data.email.size() > 0 && data.email.size() <= 100
+            && (data.keys().hasAll(['email']) && data.keys().size() >= 1);
+      }
+
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(incoming()) && incoming().email == request.auth.token.email;
+      allow update: if isOwner(userId) && isValidUser(incoming()) 
+                     && incoming().email == existing().email; // Email is immutable
+    }
+
+    // 2. Candidates
+    match /users/{userId}/candidates/{candidateId} {
+      function isValidCandidate(data) {
+        return data.name is string && data.name.size() > 0 && data.name.size() <= 100
+            && data.gender is string && data.gender.size() > 0
+            && data.ethnicity is string && data.ethnicity.size() > 0
+            && data.university_tier in ['Tier 1', 'Tier 2', 'Tier 3']
+            && data.location is string
+            && data.years_experience is number
+            && data.skills is list
+            && data.decision in ['Accepted', 'Rejected']
+            && data.confidence is number;
+      }
+
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isVerified() && isValidId(candidateId) && isValidCandidate(incoming());
+      allow update: if isOwner(userId) && isVerified() && isValidCandidate(incoming());
+      allow delete: if isOwner(userId) && isVerified();
+    }
+
+    // 3. Audits
+    match /users/{userId}/audits/{auditId} {
+      function isValidAudit(data) {
+        return data.candidateId is string && data.candidateId.size() > 0
+            && data.bias_detected is bool
+            && data.bias_type is list
+            && data.ethical_risk_level in ['low', 'medium', 'high']
+            && data.timestamp is timestamp;
+      }
+
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isVerified() && isValidId(auditId) && isValidAudit(incoming())
+                     && exists(/databases/$(database)/documents/users/$(userId)/candidates/$(incoming().candidateId)); // Relational integrity
+      allow delete: if isOwner(userId) && isVerified();
+    }
+  }
+}

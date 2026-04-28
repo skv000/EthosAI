@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user-specific metadata and audit summary.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "disparateImpact": { "type": "number" },
+        "proxyCorrelation": { "type": "number" },
+        "ethicalIndex": { "type": "number" },
+        "datasetSummary": { "type": "string" }
+      },
+      "required": ["email"]
+    },
+    "Candidate": {
+      "title": "Candidate",
+      "description": "Represents a candidate in the recruitment process.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "gender": { "type": "string" },
+        "ethnicity": { "type": "string" },
+        "university_tier": { "type": "string", "enum": ["Tier 1", "Tier 2", "Tier 3"] },
+        "location": { "type": "string" },
+        "years_experience": { "type": "number" },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "decision": { "type": "string", "enum": ["Accepted", "Rejected"] },
+        "confidence": { "type": "number" }
+      },
+      "required": ["name", "gender", "ethnicity", "university_tier", "location"]
+    },
+    "Audit": {
+      "title": "Audit Result",
+      "description": "Detailed fairness audit result for a specific candidate.",
+      "type": "object",
+      "properties": {
+        "candidateId": { "type": "string" },
+        "bias_detected": { "type": "boolean" },
+        "bias_type": { "type": "array", "items": { "type": "string" } },
+        "confidence_score": { "type": "number" },
+        "decision_explanation": { "type": "string" },
+        "bias_explanation": { "type": "string" },
+        "counterfactual_analysis": { "type": "string" },
+        "affected_feature": { "type": "array", "items": { "type": "string" } },
+        "ethical_risk_level": { "type": "string", "enum": ["low", "medium", "high"] },
+        "recommendation": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["candidateId", "bias_detected", "ethical_risk_level"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Core user document."
+    },
+    "/users/{userId}/candidates/{candidateId}": {
+      "schema": "Candidate",
+      "description": "User's uploaded candidates."
+    },
+    "/users/{userId}/audits/{auditId}": {
+      "schema": "Audit",
+      "description": "Specific audit results for candidates."
+    }
+  }
+}

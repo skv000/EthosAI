@@ -28,10 +28,64 @@ import { Card, Button, RiskBadge } from './components/UI';
 import ReactMarkdown from 'react-markdown';
 
 import { HowItWorks } from './components/HowItWorks';
+import { auth, db, signInWithGoogle, logout, onAuthStateChanged, User } from './lib/firebase';
+import { 
+  collection, 
+  getDocs, 
+  query, 
+  orderBy, 
+  serverTimestamp, 
+  doc, 
+  setDoc, 
+  getDoc,
+  deleteDoc,
+  onSnapshot,
+  writeBatch
+} from 'firebase/firestore';
+import { LogOut, LogIn } from 'lucide-react';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState<'dashboard' | 'how-it-works' | 'counterfactuals' | 'history'>('dashboard');
-  const [candidates, setCandidates] = useState<Candidate[]>(MOCK_DATASET);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
   const [auditResult, setAuditResult] = useState<AuditResult | null>(null);
   const [datasetSummary, setDatasetSummary] = useState<string | null>(null);
@@ -61,18 +115,120 @@ export default function App() {
     confidence: 0.85
   });
 
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthLoading(false);
+      if (!currentUser) {
+        setCandidates(MOCK_DATASET);
+        setAuditHistory([]);
+      }
+    });
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const candPath = `users/${user.uid}/candidates`;
+    const candidatesRef = collection(db, candPath);
+    const qCandidates = query(candidatesRef);
+    const unsubscribeCandidates = onSnapshot(qCandidates, (snapshot) => {
+      const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as Candidate));
+      if (data.length > 0) {
+        setCandidates(data);
+      }
+    }, (error) => {
+      console.error("Firestore List Candidates Error:", error);
+    });
+
+    const auditsPath = `users/${user.uid}/audits`;
+    const auditsRef = collection(db, auditsPath);
+    const qAudits = query(auditsRef, orderBy('timestamp', 'desc'));
+    const unsubscribeAudits = onSnapshot(qAudits, (snapshot) => {
+      const data = snapshot.docs.map(auditDoc => {
+        const auditData = auditDoc.data();
+        const cand = candidates.find(c => c.id === auditData.candidateId);
+        return {
+          candidate: cand || { name: auditData.candidateName || 'Deleted Candidate' } as Candidate,
+          result: auditData as AuditResult,
+          timestamp: auditData.timestamp?.toDate() || new Date()
+        };
+      });
+      setAuditHistory(data);
+    }, (error) => {
+      console.error("Firestore List Audits Error:", error);
+    });
+
+    const userDocRef = doc(db, 'users', user.uid);
+    const unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const userData = docSnap.data();
+        if (userData.disparateImpact !== undefined) {
+          setGlobalMetrics({
+            disparateImpact: userData.disparateImpact,
+            proxyCorrelation: userData.proxyCorrelation,
+            ethicalIndex: userData.ethicalIndex
+          });
+        }
+        if (userData.datasetSummary) {
+          setDatasetSummary(userData.datasetSummary);
+        }
+      }
+    }, (error) => {
+      console.error("Firestore Get User Error:", error);
+    });
+
+    return () => {
+      unsubscribeCandidates();
+      unsubscribeAudits();
+      unsubscribeUser();
+    };
+  }, [user, candidates.length]);
+
   const runDecisionAudit = async (candidate: Candidate) => {
     setIsAuditing(true);
     setSelectedCandidate(candidate);
-    setCurrentPage('dashboard'); // Ensure we are on dashboard if auditing a candidate
+    setCurrentPage('dashboard');
     try {
       const result = await auditDecision(candidate, candidates);
       setAuditResult(result);
-      setAuditHistory(prev => [{ candidate, result, timestamp: new Date() }, ...prev]);
+      
+      if (user) {
+        const auditPath = `users/${user.uid}/audits`;
+        const auditId = `audit-${Date.now()}`;
+        await setDoc(doc(db, auditPath, auditId), {
+          ...result,
+          candidateId: candidate.id,
+          candidateName: candidate.name,
+          timestamp: serverTimestamp()
+        });
+      } else {
+        setAuditHistory(prev => [{ candidate, result, timestamp: new Date() }, ...prev]);
+      }
     } catch (error) {
       console.error(error);
     } finally {
       setIsAuditing(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    try {
+      const u = await signInWithGoogle();
+      const userDocRef = doc(db, 'users', u.uid);
+      const userDoc = await getDoc(userDocRef);
+      if (!userDoc.exists()) {
+        await setDoc(userDocRef, {
+          email: u.email,
+          disparateImpact: 0.72,
+          proxyCorrelation: 0.14,
+          ethicalIndex: 74.2,
+          datasetSummary: "Initialization complete. Upload candidates to begin audit."
+        });
+      }
+    } catch (error) {
+      console.error("Login failed:", error);
     }
   };
 
@@ -86,14 +242,25 @@ export default function App() {
     a.click();
   };
 
-  const handleAddCandidate = () => {
-    const id = (candidates.length + 1).toString();
+  const handleAddCandidate = async () => {
+    const id = user ? `cand-${Date.now()}` : (candidates.length + 1).toString();
     const candidate: Candidate = {
       ...newCandidate as Candidate,
       id,
       confidence: 0.85
     };
-    setCandidates([candidate, ...candidates]);
+
+    if (user) {
+      try {
+        const candRef = doc(db, `users/${user.uid}/candidates`, id);
+        await setDoc(candRef, candidate);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/candidates/${id}`);
+      }
+    } else {
+      setCandidates([candidate, ...candidates]);
+    }
+
     setShowAddModal(false);
     setNewCandidate({
       name: 'Jane Doe',
@@ -118,6 +285,18 @@ export default function App() {
         proxyCorrelation: result.proxyCorrelation,
         ethicalIndex: result.ethicalIndex
       });
+
+      if (user) {
+        const userDocRef = doc(db, 'users', user.uid);
+        await setDoc(userDocRef, {
+          disparateImpact: result.disparateImpact,
+          proxyCorrelation: result.proxyCorrelation,
+          ethicalIndex: result.ethicalIndex,
+          datasetSummary: result.summary,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      }
+
       setCurrentPage('dashboard');
     } catch (error) {
       console.error(error);
@@ -138,10 +317,10 @@ export default function App() {
     }
   };
 
-  const processRawData = (data: any[]) => {
-    const sanitized = data.map((c, index) => ({
+  const processRawData = async (data: any[]) => {
+    const sanitized: Candidate[] = data.map((c, index) => ({
       ...c,
-      id: c.id || `uploaded-${Date.now()}-${index}`,
+      id: c.id || (user ? `uploaded-${Date.now()}-${index}` : `mock-${Date.now()}-${index}`),
       name: c.name || `Candidate ${index + 1}`,
       gender: c.gender || 'Unknown',
       ethnicity: c.ethnicity || 'Unknown',
@@ -153,9 +332,24 @@ export default function App() {
       confidence: typeof c.confidence === 'number' ? c.confidence : (parseFloat(c.confidence) || 0.5)
     }));
 
-    setCandidates(sanitized);
-    setUploadStatus({ type: 'success', message: `Successfully loaded ${sanitized.length} records.` });
-    setDatasetSummary(`Dataset of ${sanitized.length} records uploaded. Run System Audit to analyze global patterns.`);
+    if (user) {
+      try {
+        const batch = writeBatch(db);
+        sanitized.forEach(c => {
+          const ref = doc(db, `users/${user.uid}/candidates`, c.id);
+          batch.set(ref, c);
+        });
+        await batch.commit();
+        setUploadStatus({ type: 'success', message: `Successfully synced ${sanitized.length} records to cloud.` });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/candidates`);
+      }
+    } else {
+      setCandidates(sanitized);
+      setUploadStatus({ type: 'success', message: `Successfully loaded ${sanitized.length} records.` });
+    }
+    
+    setDatasetSummary(`Dataset of ${sanitized.length} records processed. Run System Audit to analyze global patterns.`);
     setTimeout(() => setUploadStatus(null), 5000);
   };
 
@@ -211,6 +405,30 @@ export default function App() {
           <h1 className="text-xl font-semibold tracking-tight">EthosGuard <span className="text-slate-500 font-normal text-sm ml-2">// MVP PHASE 1</span></h1>
         </div>
           <div className="flex items-center gap-6">
+            {isAuthLoading ? (
+              <div className="w-8 h-8 rounded-full border-2 border-slate-800 border-t-emerald-500 animate-spin mr-4"></div>
+            ) : user ? (
+              <div className="flex items-center gap-4 border-r border-slate-800 pr-6">
+                 <div className="text-right hidden sm:block">
+                   <p className="text-[10px] text-white font-bold leading-none">{user.displayName || user.email?.split('@')[0]}</p>
+                   <p className="text-[8px] text-slate-500 uppercase tracking-tighter">Verified Auditor</p>
+                 </div>
+                 <button 
+                  onClick={logout}
+                  className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-rose-400 transition-colors"
+                  title="Logout"
+                 >
+                   <LogOut className="w-4 h-4" />
+                 </button>
+               </div>
+            ) : (
+              <button 
+                onClick={handleLogin}
+                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-bold text-white hover:bg-slate-700 transition-colors uppercase tracking-widest mr-2"
+              >
+                <LogIn className="w-3 h-3" /> Login to Cloud
+              </button>
+            )}
             <div className="flex flex-col items-end gap-1">
               <div className="flex items-center gap-2">
                 <input 
@@ -238,10 +456,10 @@ export default function App() {
                 </motion.span>
               )}
             </div>
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-xs font-medium text-slate-400">Gemini 3 Flash Active</span>
-            </div>
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${user ? 'bg-blue-500' : 'bg-emerald-500'} animate-pulse`}></span>
+            <span className="text-xs font-medium text-slate-400">{user ? 'Cloud Sync Active' : 'Gemini 3 Flash Active'}</span>
+          </div>
             <Button variant="primary" onClick={runDatasetAudit} disabled={isSummarizing}>
               {isSummarizing ? 'Analyzing...' : 'Run System Audit'}
             </Button>
@@ -435,9 +653,16 @@ export default function App() {
             <HowItWorks onStart={() => setCurrentPage('dashboard')} />
           ) : currentPage === 'history' ? (
             <motion.div initial={{opacity: 0, x: -10}} animate={{opacity: 1, x:0}} className="space-y-6">
-               <h2 className="text-xl font-bold text-white flex items-center gap-2 px-1">
-                 <History className="w-5 h-5 text-amber-400" /> Session Audit History
-               </h2>
+               <div className="flex justify-between items-center px-1">
+                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                   <History className="w-5 h-5 text-amber-400" /> {user ? 'Cloud Audit Archives' : 'Session Audit History'}
+                 </h2>
+                 {user && (
+                   <span className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-full font-bold uppercase tracking-widest">
+                     Persisted to Firestore
+                   </span>
+                 )}
+               </div>
                {auditHistory.length === 0 ? (
                  <div className="h-40 border border-slate-800 bg-slate-900 border-dashed rounded-xl flex items-center justify-center text-slate-500 font-mono text-xs uppercase tracking-widest">
                    No audits recorded this session
